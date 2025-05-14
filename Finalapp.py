@@ -686,7 +686,7 @@ def main():
             st.session_state['consolidated_df'] = None
             st.session_state['entity_dfs'] = {}
             st.session_state['visualizations'] = {}
-            st.experimental_rerun()
+            st.rerun()
 
     # File uploader
     uploaded_files = st.file_uploader("Upload Resume PDFs", type="pdf", accept_multiple_files=True)
@@ -713,7 +713,7 @@ def main():
                         st.session_state['entity_dfs']
                     )
                     st.success(f"✅ Successfully processed {len(results)} out of {len(uploaded_files)} resumes!")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("❌ No resumes were successfully processed.")
 
