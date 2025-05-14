@@ -1,0 +1,12 @@
+streamlit
+openai
+pdf2image
+python-dotenv
+pandas
+plotly
+matplotlib
+seaborn
+Pillow
+python-dateutil
+docx2txt
+PyMuPDF
