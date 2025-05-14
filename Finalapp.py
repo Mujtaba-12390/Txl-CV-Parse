@@ -776,13 +776,6 @@ def main():
             else:
                 st.info("Not enough skill data to generate visualization")
 
-            # Education analysis
-            st.subheader("Education Analysis")
-            if 'education_pie' in st.session_state['visualizations']:
-                st.plotly_chart(st.session_state['visualizations']['education_pie'], use_container_width=True)
-            else:
-                st.info("Not enough education data to generate visualization")
-
             # Experience filtering
             st.subheader("Experience Filtering")
             if 'consolidated_df' in st.session_state and st.session_state['consolidated_df'] is not None:
