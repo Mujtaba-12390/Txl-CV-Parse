@@ -647,8 +647,6 @@ def display_resume_details(result):
 
 # Main Streamlit App
 def main():
-    # Add logo
-    st.image("XL- White Logo.png", width=200)  # Adjust the width as needed
 
     # App title and introduction
     st.title("🔍 Resume Parser")
