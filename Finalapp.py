@@ -65,25 +65,25 @@ def convert_pdf_to_images(pdf_path, dpi=150):
     try:
         # Calculate zoom factor based on DPI (default PDF is 72 DPI)
         zoom = dpi / 72
-        
+
         # Open the PDF
         pdf_document = fitz.open(pdf_path)
         images = []
-        
+
         # Process each page
         for page_num in range(len(pdf_document)):
             page = pdf_document.load_page(page_num)
-            
+
             # Render page to an image with the specified zoom
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-            
+
             # Convert to PIL Image
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            
+
             # Compress the image
             img_bytes = compress_image(img)
             images.append(img_bytes)
-        
+
         pdf_document.close()
         return images
     except Exception as e:
@@ -490,17 +490,6 @@ def create_visualizations(consolidated_df, entity_dfs):
     visualizations = {}
 
     if consolidated_df is not None and not consolidated_df.empty:
-        # 1. Experience distribution
-        fig1 = px.histogram(
-            consolidated_df,
-            x='Total Experience (Years)',
-            nbins=10,
-            title='Distribution of Total Experience',
-            labels={'Total Experience (Years)': 'Years of Experience'},
-            color_discrete_sequence=['#4361ee']
-        )
-        visualizations['experience_dist'] = fig1
-
         # 2. Common skills
         if 'skills' in entity_dfs and not entity_dfs['skills'].empty:
             skill_counts = entity_dfs['skills']['skill'].value_counts().head(15)
@@ -645,9 +634,112 @@ def display_resume_details(result):
             for lang in languages:
                 st.write(f"**{lang.get('language_name', 'N/A')}**: {lang.get('proficiency', 'N/A')}")
 
+def extract_jd_info(jd_text):
+    """
+    Extracts years of experience, skills, location, job type, and ideal candidate profile from a given job description using GPT-4.
+    """
+    prompt = f"""Extract the following details from the job description and provide the output strictly in the following JSON format:
+    {{
+        "experience": int,  # Total years of experience
+        "skills": ["skill1", "skill2", "skill3"],  # List of required skills
+        "location": "location_string",  # Location of the job
+        "job_type": "onsite" or "remote",  # If not specified, assume "onsite"
+        "ideal_candidate": ["requirement1", "requirement2", "requirement3", "requirement4", "requirement5"]  # Up to 5 specific requirements for the ideal candidate directly from the JD
+    }}
+
+    For the ideal_candidate field, extract up to 5 specific points directly from the job description that represent the key requirements. These should be the most important qualifications or experiences mentioned (like "2+ years experience in Python", "Bachelor's degree in Computer Science", etc.).
+
+    Job Description:
+    {jd_text}
+    """
+
+    response = openai.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    # Remove triple backticks if present
+    content = re.sub(r'^```json|```$', '', content).strip()
+
+    # Validate JSON response
+    try:
+        extracted_data = json.loads(content)
+    except json.JSONDecodeError as e:
+        print("Error: The response is not valid JSON.", e)
+        return None
+
+    return extracted_data
+
+def format_main_df(extracted_info):
+    """
+    Creates the main DataFrame with job details, formatting the ideal candidate as a string
+    """
+    if not extracted_info:
+        return None
+
+    # Format ideal candidate list as bulleted points
+    if isinstance(extracted_info['ideal_candidate'], list):
+        ideal_candidate = "\n• " + "\n• ".join(extracted_info['ideal_candidate'])
+    else:
+        ideal_candidate = str(extracted_info['ideal_candidate'])
+
+    return pd.DataFrame([{
+        'experience': extracted_info['experience'],
+        'skills': ', '.join(extracted_info['skills']),
+        'location': extracted_info['location'],
+        'job_type': extracted_info['job_type'],
+        'ideal_candidate': ideal_candidate
+    }])
+
+def compare_jd_with_resumes(jd_info, results):
+    """
+    Compare JD with resumes and rate/recommend candidates.
+    Prioritize experience and keyword matching over location.
+    """
+    if not jd_info or not results:
+        return None
+
+    jd_skills = set(jd_info['skills'])
+    jd_experience = jd_info['experience']
+    jd_location = jd_info['location'].lower()
+
+    recommendations = []
+
+    for result in results:
+        candidate_name = result.get('name', 'Unknown')
+        candidate_skills = set(result.get('skills', []))
+        candidate_experience = result.get('total_experience_years', 0)
+        candidate_location = result.get('location', {}).get('location_name', '').lower()
+
+        # Calculate skill match score
+        skill_match = len(jd_skills.intersection(candidate_skills)) / len(jd_skills) if jd_skills else 0
+
+        # Calculate experience match score
+        experience_match = min(candidate_experience / jd_experience, 1) if jd_experience else 0
+
+        # Calculate location match score
+        location_match = 1 if jd_location in candidate_location else 0
+
+        # Calculate overall match score with adjusted weights
+        overall_match = (skill_match * 0.5) + (experience_match * 0.4) + (location_match * 0.1)
+
+        recommendations.append({
+            'name': candidate_name,
+            'skill_match': skill_match,
+            'experience_match': experience_match,
+            'location_match': location_match,
+            'overall_match': overall_match
+        })
+
+    # Sort recommendations by overall match score
+    recommendations.sort(key=lambda x: x['overall_match'], reverse=True)
+
+    return pd.DataFrame(recommendations)
+
 # Main Streamlit App
 def main():
-
     # App title and introduction
     st.title("🔍 Resume Parser")
     st.write("""
@@ -669,6 +761,8 @@ def main():
         st.session_state['entity_dfs'] = {}
     if 'visualizations' not in st.session_state:
         st.session_state['visualizations'] = {}
+    if 'jd_info' not in st.session_state:
+        st.session_state['jd_info'] = None
 
     # Sidebar settings
     with st.sidebar:
@@ -684,6 +778,7 @@ def main():
             st.session_state['consolidated_df'] = None
             st.session_state['entity_dfs'] = {}
             st.session_state['visualizations'] = {}
+            st.session_state['jd_info'] = None
             st.rerun()
 
     # File uploader
@@ -718,7 +813,7 @@ def main():
     # Display results if available
     if st.session_state['results']:
         # Tabs for different views
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "👤 Individual Resumes", "📈 Analysis", "📁 Data Export"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "👤 Individual Resumes", "📈 Analysis", "📁 Data Export", "📄 JD Parsing"])
 
         # Tab 1: Overview
         with tab1:
@@ -744,8 +839,8 @@ def main():
                 st.dataframe(st.session_state['consolidated_df'], use_container_width=True)
 
             # Display visualizations
-            if 'experience_dist' in st.session_state['visualizations']:
-                st.plotly_chart(st.session_state['visualizations']['experience_dist'], use_container_width=True)
+            if 'skills_bar' in st.session_state['visualizations']:
+                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True)
 
         # Tab 2: Individual Resumes
         with tab2:
@@ -801,23 +896,23 @@ def main():
             # Create download button for all data
             if 'consolidated_df' in st.session_state and st.session_state['consolidated_df'] is not None:
                 st.subheader("Download All Data")
-                
+
                 # Create ZIP file with all CSVs
                 zip_data = create_download_files(
                     st.session_state['consolidated_df'],
                     st.session_state['entity_dfs']
                 )
-                
+
                 st.download_button(
                     label="Download All Data (ZIP)",
                     data=zip_data,
                     file_name="resume_analysis_results.zip",
                     mime="application/zip"
                 )
-                
+
                 # Individual tables for download
                 st.subheader("Download Individual Tables")
-                
+
                 # Consolidated table
                 csv_consolidated = st.session_state['consolidated_df'].to_csv(index=False).encode('utf-8')
                 st.download_button(
@@ -827,7 +922,7 @@ def main():
                     mime="text/csv",
                     key="download_consolidated"
                 )
-                
+
                 # Entity tables
                 for name, df in st.session_state['entity_dfs'].items():
                     csv_data = df.to_csv(index=False).encode('utf-8')
@@ -838,6 +933,43 @@ def main():
                         mime="text/csv",
                         key=f"download_{name}"
                     )
+
+        # Tab 5: JD Parsing
+        with tab5:
+            st.header("Job Description Parsing")
+
+            # Text area for JD input
+            jd_text = st.text_area("Enter the Job Description", height=300)
+
+            # Button to parse JD
+            if st.button("Parse Job Description"):
+                if jd_text:
+                    with st.spinner("Parsing Job Description..."):
+                        jd_info = extract_jd_info(jd_text)
+                        if jd_info:
+                            st.session_state['jd_info'] = jd_info
+                            st.success("✅ Successfully parsed Job Description!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to parse Job Description.")
+                else:
+                    st.warning("Please enter a Job Description.")
+
+            # Display JD info if available
+            if st.session_state['jd_info']:
+                jd_df = format_main_df(st.session_state['jd_info'])
+                st.subheader("Job Description Details")
+                st.dataframe(jd_df, use_container_width=True)
+
+                # Button to compare with resumes
+                if st.button("Compare with Resumes"):
+                    if st.session_state['results']:
+                        with st.spinner("Comparing Job Description with Resumes..."):
+                            recommendations_df = compare_jd_with_resumes(st.session_state['jd_info'], st.session_state['results'])
+                            st.subheader("Candidate Recommendations")
+                            st.dataframe(recommendations_df, use_container_width=True)
+                    else:
+                        st.warning("Please process resumes first.")
 
 if __name__ == "__main__":
     main()
