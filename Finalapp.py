@@ -840,7 +840,7 @@ def main():
 
             # Display visualizations
             if 'skills_bar' in st.session_state['visualizations']:
-                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True)
+                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True, key="skills_bar_chart")
 
         # Tab 2: Individual Resumes
         with tab2:
@@ -867,7 +867,7 @@ def main():
             # Skills analysis
             st.subheader("Skills Analysis")
             if 'skills_bar' in st.session_state['visualizations']:
-                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True)
+                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True, key="skill_bar_chart")
             else:
                 st.info("Not enough skill data to generate visualization")
 
