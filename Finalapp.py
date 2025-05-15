@@ -95,7 +95,7 @@ def encode_image(image_bytes):
     return base64.b64encode(image_bytes).decode('utf-8')
 
 def parse_date(date_str):
-    """Parse date string to standard format, return None if invalid"""
+    """Parse date string to standard format with specific handling for recent dates"""
     if not date_str:
         return None
 
@@ -103,26 +103,116 @@ def parse_date(date_str):
     if isinstance(date_str, str) and re.search(r'present|current|now', date_str.lower()):
         return datetime.now().strftime('%Y-%m-%d')
 
+    # Print raw input for debugging
+    print(f"Parsing date from: '{date_str}'")
+    
     try:
-        # Add more date formats as needed
+        # Clean the date string
+        date_str = date_str.strip()
+        
+        # SPECIFIC FIX FOR 12.2024 FORMAT
+        # This pattern looks for month.year format like 12.2024
+        special_format = re.search(r'(\d{1,2})\.(\d{4})', date_str)
+        if special_format:
+            month = int(special_format.group(1))
+            year = int(special_format.group(2))
+            
+            # Validate month
+            if 1 <= month <= 12:
+                print(f"Found special format date: month={month}, year={year}")
+                # Ensure recent years are correctly interpreted
+                current_year = datetime.now().year
+                if year > current_year - 5 and year <= current_year + 2:
+                    return f"{year}-{month:02d}-01"
+        
+        # Extra check specifically for 2024/2004 confusion in OCR
+        # First, check if the string contains "2024" explicitly
+        if "2024" in date_str:
+            print("Found '2024' explicitly in date string")
+            month_match = re.search(r'(\d{1,2})[\/\.\-]2024', date_str)
+            if month_match:
+                month = int(month_match.group(1))
+                if 1 <= month <= 12:
+                    return f"2024-{month:02d}-01"
+            return "2024-01-01"  # Default to January if month not found
+            
+        # Try standard date formats
         for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%b %Y', '%B %Y', '%Y', '%m/%Y', '%d-%m-%Y', '%m-%Y']:
             try:
-                return datetime.strptime(date_str.strip(), fmt).strftime('%Y-%m-%d')
+                parsed_date = datetime.strptime(date_str.strip(), fmt)
+                
+                # Critical fix for the 2004/2024 confusion
+                # If we parsed 2004 but the original text contains indicators of 2024
+                if parsed_date.year == 2004 and ("202" in date_str or "24" in date_str):
+                    print(f"Correcting likely OCR error: 2004 -> 2024")
+                    return f"2024-{parsed_date.month:02d}-{parsed_date.day:02d}"
+                
+                # Sanity check for dates
+                current_year = datetime.now().year
+                if parsed_date.year < 1950 or parsed_date.year > current_year + 2:
+                    print(f"Rejecting unlikely year: {parsed_date.year}")
+                    continue
+                
+                return parsed_date.strftime('%Y-%m-%d')
             except ValueError:
                 continue
 
-        # Try to extract year and month if possible
+        # Aggressive pattern matching for years
+        year_patterns = [
+            (r'202[0-4]', lambda y: int(y)),  # Matches 2020-2024
+            (r'20\s*2[0-4]', lambda y: int(y.replace(' ', ''))),  # Handles OCR spacing issues
+        ]
+        
+        for pattern, year_parser in year_patterns:
+            year_match = re.search(pattern, date_str)
+            if year_match:
+                try:
+                    year = year_parser(year_match.group(0))
+                    print(f"Found year with pattern matching: {year}")
+                    
+                    # Try to extract month
+                    month = 1  # Default to January
+                    month_patterns = [
+                        r'(\d{1,2})[\/\.\-]',  # Matches 12.2024, 12/2024, 12-2024
+                        r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'  # Month names
+                    ]
+                    
+                    for m_pattern in month_patterns:
+                        m_match = re.search(m_pattern, date_str, re.IGNORECASE)
+                        if m_match:
+                            m_str = m_match.group(1)
+                            if m_str.isdigit():
+                                month = int(m_str)
+                                if 1 <= month <= 12:
+                                    break
+                            else:
+                                try:
+                                    month = datetime.strptime(m_str, '%b').month
+                                    break
+                                except ValueError:
+                                    pass
+                    
+                    return f"{year}-{month:02d}-01"
+                except Exception as e:
+                    print(f"Error processing year match: {e}")
+        
+        # Last resort: check for 4-digit numbers that could be years
         year_match = re.search(r'(20\d{2}|19\d{2})', date_str)
         if year_match:
-            year = year_match.group(1)
-            month_match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', date_str, re.IGNORECASE)
-            if month_match:
-                month = datetime.strptime(month_match.group(1), '%b').month
-                return f"{year}-{month:02d}-01"
+            year = int(year_match.group(1))
+            
+            # Special case for 2004 which might actually be 2024
+            if year == 2004 and ("Present" in date_str or datetime.now().year - year > 15):
+                print("Converting suspected 2004 to 2024 based on context")
+                year = 2024
+                
+            print(f"Extracted year as last resort: {year}")
             return f"{year}-01-01"
-
+            
+        print(f"Failed to parse date: '{date_str}'")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"Error parsing date '{date_str}': {str(e)}")
         return None
 
 def calculate_experience_duration(start_date, end_date):
@@ -132,21 +222,96 @@ def calculate_experience_duration(start_date, end_date):
 
     try:
         start = datetime.strptime(start_date, '%Y-%m-%d')
+        
+        # Debug printing
+        print(f"Calculating experience: {start_date} to {end_date}")
 
         if not end_date:
             end = datetime.now()
+            print(f"No end date provided, using current date: {end}")
         else:
             end = datetime.strptime(end_date, '%Y-%m-%d')
 
+        # Critical sanity check
+        current_year = datetime.now().year
+        if start.year < current_year - 60:
+            print(f"Suspicious start year {start.year}, might be OCR error.")
+            # Check if it might be mistaking century
+            if start.year < 2000 and current_year - 100 < start.year < current_year - 70:
+                print(f"Correcting century: {start.year} -> {start.year + 100}")
+                start = start.replace(year=start.year + 100)
+        
+        # Another sanity check for 2004/2024 confusion
+        if start.year == 2004 and end.year >= 2024:
+            # This could be a case where 2024 was misread as 2004
+            years_diff = end.year - start.year
+            if years_diff > 15:  # Unusually long employment period
+                print(f"Suspicious date range: {start.year} to {end.year}. Correcting 2004 to 2024.")
+                start = start.replace(year=2024)
+
         if end < start:
-            return 0
+            print(f"Warning: End date {end_date} is before start date {start_date}.")
+            # If the difference is small, it might be a mistake - swap them
+            if (start - end).days < 30:
+                start, end = end, start
+                print("Dates were close together - swapped them.")
+            else:
+                # If we have an end date of "Present" and start date in future,
+                # the start date is likely wrong
+                if end.year == datetime.now().year:
+                    start = start.replace(year=start.year - 20)
+                    print(f"Adjusted suspicious start date to {start.year}")
 
         diff = relativedelta(end, start)
         years_decimal = diff.years + (diff.months / 12) + (diff.days / 365.25)
-        return round(years_decimal, 2)
+        
+        # Final sanity check
+        if years_decimal > 30:
+            print(f"Warning: Calculated experience ({years_decimal} years) seems too long.")
+            # If suspicious, cap at reasonable amount
+            years_decimal = min(years_decimal, 25)
+            
+        result = round(years_decimal, 2)
+        print(f"Calculated experience duration: {result} years")
+        return result
     except Exception as e:
         print(f"Error calculating experience: {str(e)}")
         return 0
+
+
+# Patch function for extract_text_from_images to modify
+def patch_extract_text_from_images(original_function):
+    def wrapped_function(images, pdf_path):
+        result = original_function(images, pdf_path)
+        
+        if result:
+            # Introduce additional post-processing specifically for dates
+            for exp in result.get('experience', []):
+                # Fix known OCR issues with dates
+                if exp.get('start_date') == '2004-01-01' and 'present' in str(exp.get('end_date')).lower():
+                    print("Applying post-processing fix for suspected 2004/2024 confusion")
+                    exp['start_date'] = '2024-01-01'
+                
+                # Check for unusually long employment periods
+                start_date = exp.get('start_date')
+                end_date = exp.get('end_date')
+                
+                if start_date and end_date:
+                    try:
+                        start = datetime.strptime(start_date, '%Y-%m-%d')
+                        end = datetime.strptime(end_date, '%Y-%m-%d')
+                        
+                        # If employment is over 15 years and starts with "200", check if it's 2024
+                        if (end - start).days > 365 * 15 and str(start.year).startswith('200'):
+                            corrected_year = 2024
+                            print(f"Post-processing date correction: {start.year} -> {corrected_year}")
+                            exp['start_date'] = f"{corrected_year}-{start.month:02d}-{start.day:02d}"
+                    except Exception as e:
+                        print(f"Error in post-processing dates: {e}")
+        
+        return result
+    
+    return wrapped_function
 
 def extract_text_from_images(images, pdf_path):
     """Extract information from resume images using OpenAI Vision"""
@@ -840,7 +1005,7 @@ def main():
 
             # Display visualizations
             if 'skills_bar' in st.session_state['visualizations']:
-                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True, key="skills_bar_chart")
+                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True)
 
         # Tab 2: Individual Resumes
         with tab2:
@@ -867,7 +1032,7 @@ def main():
             # Skills analysis
             st.subheader("Skills Analysis")
             if 'skills_bar' in st.session_state['visualizations']:
-                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True, key="skill_bar_chart")
+                st.plotly_chart(st.session_state['visualizations']['skills_bar'], use_container_width=True)
             else:
                 st.info("Not enough skill data to generate visualization")
 
